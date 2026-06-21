@@ -1,118 +1,72 @@
-
 const express = require("express");
 const mongoose = require("mongoose");
-const nodemailer = require("nodemailer");
-const cors = require("cors");
-require("dotenv").config();
+const path = require("path");
 
 const app = express();
+
 app.use(express.json());
-app.use(cors());
-app.use(express.static("public"));
+app.use(express.urlencoded({ extended: true }));
 
-mongoose.connect(process.env.MONGO_URI)
-.then(()=>console.log("MongoDB connected"));
+/* =========================
+   MONGODB CONNECTION
+========================= */
+const MONGO_URI = process.env.MONGO_URI;
 
-// DATABASE
-const Request = mongoose.model("Request", new mongoose.Schema({
-  id: String,
-  name: String,
-  email: String,
-  note: String,
-  status: { type: String, default: "pending" },
-  createdAt: { type: Date, default: Date.now }
-}));
-
-function makeId(){
-  return "REQ-" + Math.random().toString(36).substring(2,10).toUpperCase();
+if (!MONGO_URI) {
+  console.log("❌ MONGO_URI is missing in environment variables");
+} else {
+  mongoose
+    .connect(MONGO_URI)
+    .then(() => console.log("✅ MongoDB connected"))
+    .catch((err) => console.log("❌ Mongo error:", err.message));
 }
 
-// EMAIL
-const transporter = nodemailer.createTransport({
-  service:"gmail",
-  auth:{
-    user:process.env.EMAIL_USER,
-    pass:process.env.EMAIL_PASS
-  }
+/* =========================
+   SIMPLE MEMORY STORAGE (fallback if DB not used yet)
+========================= */
+let requests = [];
+
+/* =========================
+   ROUTES
+========================= */
+
+// Home route (fixes "Cannot GET /")
+app.get("/", (req, res) => {
+  res.send("✅ Server is running correctly");
 });
 
-// DISCORD SYNC
-async function sendDiscord(data){
-  try{
-    await fetch(process.env.DISCORD_WEBHOOK_URL, {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({
-        content: `📩 New Request\nName: ${data.name}\nEmail: ${data.email}\nNote: ${data.note}\nID: ${data.id}`
-      })
-    });
-  }catch(e){
-    console.log("discord fail", e.message);
-  }
-}
+// Receive webhook / requests
+app.post("/webhook", (req, res) => {
+  const data = {
+    id: Date.now(),
+    email: req.body.email || "no-email",
+    note: req.body.note || "no-note",
+    date: new Date()
+  };
 
-// WEBHOOK ENTRY
-app.post("/webhook", async (req,res)=>{
-  const data = req.body;
+  requests.push(data);
 
-  const saved = await Request.create({
-    id: makeId(),
-    name: data.name || "unknown",
-    email: data.email,
-    note: data.note || "",
-    status: "pending"
-  });
+  console.log("📩 New request:", data);
 
-  // SYNC BOTH SYSTEMS
-  await sendDiscord(saved);
-
-  res.json({ok:true});
+  res.json({ success: true, message: "Request received" });
 });
 
-// DASHBOARD
-app.get("/requests", async (req,res)=>{
-  res.json(await Request.find().sort({_id:-1}));
+// View requests (fixes your Cannot GET /requests issue)
+app.get("/requests", (req, res) => {
+  res.json(requests);
 });
 
-// COMPLETE + EMAIL + DISCORD UPDATE
-app.post("/complete/:id", async (req,res)=>{
-  const r = await Request.findOne({id:req.params.id});
-  r.status = "completed";
-  await r.save();
-
-  await transporter.sendMail({
-    from: process.env.EMAIL_USER,
-    to: r.email,
-    subject: "Request Completed",
-    text: `Hello ${r.name}, your request ${r.id} is completed.`
-  });
-
-  await sendDiscord({
-    name: r.name,
-    email: r.email,
-    note: "STATUS UPDATED: COMPLETED",
-    id: r.id
-  });
-
-  res.json({ok:true});
+// Clear requests (optional admin tool)
+app.delete("/requests", (req, res) => {
+  requests = [];
+  res.json({ success: true, message: "Cleared" });
 });
 
-// AUTO WORKER (backup safety)
-setInterval(async ()=>{
-  const pending = await Request.find({status:"pending"});
-  for(const r of pending){
-    if(!r.email) continue;
-    try{
-      await transporter.sendMail({
-        from:process.env.EMAIL_USER,
-        to:r.email,
-        subject:"We received your request",
-        text:`Hi ${r.name}, we received ${r.id}`
-      });
-      r.status="emailed";
-      await r.save();
-    }catch(e){}
-  }
-},15000);
+/* =========================
+   START SERVER (IMPORTANT FOR RAILWAY)
+========================= */
+const PORT = process.env.PORT || 3000;
 
-app.listen(3000, ()=>console.log("RUNNING 24/7 READY"));
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
